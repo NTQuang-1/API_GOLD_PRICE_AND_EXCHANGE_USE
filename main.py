@@ -45,82 +45,67 @@ GOLD_API = "http://api.btmc.vn/api/BTMCAPI/getpricebtmc?key=3kd8ub1llcg9t45hnoh8
 VCB_API = "https://portal.vietcombank.com.vn/Usercontrols/TVPortal.TyGia/pXML.aspx"
 
 async def fetch_and_save_data():
-    print(f"\n[{datetime.datetime.now()}] --- BẮT ĐẦU QUÉT DỮ LIỆU ---")
+    print(f"\n[{datetime.datetime.now()}] --- KIỂM TRA DỮ LIỆU MỚI ---")
     db = SessionLocal()
     
     async with httpx.AsyncClient(timeout=30.0) as client:
-        # === 1. VÀNG BTMC (CHIẾN THUẬT QUÉT HẬU TỐ) ===
+        # === 1. VÀNG BTMC ===
         try:
             res = await client.get(GOLD_API)
             try:
                 data_raw = res.json()
                 items = data_raw.get('DataList', {}).get('Data', [])
-                mode = "JSON"
             except:
-                # Fallback sang XML nếu JSON lỗi
                 content = res.content.decode('utf-8-sig').strip()
-                if not content.startswith("<root>"): content = f"<root>{content}</root>" # Bọc root nếu thiếu
+                if not content.startswith("<root>"): content = f"<root>{content}</root>"
                 data_raw = xmltodict.parse(content)
                 items = data_raw.get('root', {}).get('Data', [])
-                mode = "XML"
 
             if isinstance(items, dict): items = [items]
             
-            print(f"-> Chế độ: {mode} | Số lượng dòng: {len(items)}")
-
             found_sjc = False
             for item in items:
-                # Bước 1: Tìm xem dòng này có phải SJC không
+                # Logic tìm SJC (như cũ)
                 current_id = None
                 current_name = None
-                
-                # Duyệt qua từng cặp key-value trong item để tìm tên
                 for k, v in item.items():
                     if isinstance(v, str) and "VÀNG MIẾNG SJC" in v.upper():
                         current_name = v
-                        # Lấy ID từ key (ví dụ: n_148 -> lấy 148, @n_148 -> lấy 148)
                         current_id = k.split('_')[-1]
-                        print(f"-> [TÌM THẤY] ID: {current_id} | Tên: {current_name}")
-                        break # Đã tìm thấy tên, thoát vòng lặp key
+                        break
                 
-                # Bước 2: Nếu đã xác định được ID (ví dụ 148), đi tìm giá
                 if current_id:
                     buy = 0.0
                     sell = 0.0
-                    
-                    # Quét lại item một lần nữa để tìm key giá khớp với ID
-                    # Mẹo: Tìm key nào kết thúc bằng pb_148 (mua) và ps_148 (bán)
-                    # Bất kể phía trước là gì (@, hay không có gì)
-                    target_buy_suffix = f"pb_{current_id}"
-                    target_sell_suffix = f"ps_{current_id}"
-
+                    # Tìm giá
                     for k, v in item.items():
-                        if k.endswith(target_buy_suffix):
-                            try:
-                                buy = float(str(v).replace(',', ''))
-                                print(f"   -> Khớp giá MUA (Key: {k}): {buy}")
+                        if k.endswith(f"pb_{current_id}"):
+                            try: buy = float(str(v).replace(',', ''))
                             except: pass
-                        
-                        if k.endswith(target_sell_suffix):
-                            try:
-                                sell = float(str(v).replace(',', ''))
-                                print(f"   -> Khớp giá BÁN (Key: {k}): {sell}")
+                        if k.endswith(f"ps_{current_id}"):
+                            try: sell = float(str(v).replace(',', ''))
                             except: pass
 
-                    # Lưu vào DB nếu lấy được giá (khác 0)
                     if buy > 0:
-                        db.add(GoldHistory(name=current_name, buy=buy, sell=sell))
-                        print(f"-> [LƯU THÀNH CÔNG] {current_name}: {buy} - {sell}")
+                        # --- LOGIC MỚI: KIỂM TRA TRÙNG LẶP ---
+                        # Lấy bản ghi cuối cùng trong DB ra xem
+                        latest_gold = db.query(GoldHistory).order_by(GoldHistory.created_at.desc()).first()
+                        
+                        # Nếu đã có dữ liệu cũ VÀ giá mua/bán GIỐNG HỆT nhau -> BỎ QUA
+                        if latest_gold and latest_gold.buy == buy and latest_gold.sell == sell:
+                            print(f"-> [BỎ QUA VÀNG] Giá không đổi ({buy}-{sell})")
+                        else:
+                            # Nếu chưa có hoặc giá đã đổi -> LƯU MỚI
+                            db.add(GoldHistory(name=current_name, buy=buy, sell=sell))
+                            print(f"-> [CẬP NHẬT VÀNG] Giá mới: {buy} - {sell}")
+                        
                         found_sjc = True
-                        break # Xong việc với vàng, thoát vòng lặp items
-
-            if not found_sjc:
-                print("-> CẢNH BÁO: Không tìm thấy SJC hoặc không lấy được giá.")
+                        break
 
         except Exception as e:
             print(f"[LỖI VÀNG]: {e}")
 
-        # === 2. USD VCB (Giữ nguyên) ===
+        # === 2. USD VCB ===
         try:
             res = await client.get(VCB_API)
             xml_str = res.content.decode('utf-8-sig').strip()
@@ -130,15 +115,22 @@ async def fetch_and_save_data():
                 if r.get('@CurrencyCode') == 'USD':
                     b = float(r.get('@Buy').replace(',', ''))
                     s = float(r.get('@Sell').replace(',', ''))
-                    db.add(ExchangeHistory(currency="USD", buy_cash=b, sell=s))
-                    print(f"-> [LƯU THÀNH CÔNG] USD: {b} - {s}")
+                    
+                    # --- LOGIC MỚI: KIỂM TRA TRÙNG LẶP CHO USD ---
+                    latest_usd = db.query(ExchangeHistory).order_by(ExchangeHistory.created_at.desc()).first()
+                    
+                    if latest_usd and latest_usd.buy_cash == b and latest_usd.sell == s:
+                        print(f"-> [BỎ QUA USD] Giá không đổi ({b}-{s})")
+                    else:
+                        db.add(ExchangeHistory(currency="USD", buy_cash=b, sell=s))
+                        print(f"-> [CẬP NHẬT USD] Giá mới: {b} - {s}")
                     break
         except Exception as e:
             print(f"[LỖI USD]: {e}")
 
         db.commit()
     db.close()
-    print("--- HOÀN TẤT ---\n")
+    print("--- XONG ---\n")
 
 # --- CHẠY ---
 def run_task(): asyncio.run(fetch_and_save_data())
