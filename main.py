@@ -4,7 +4,8 @@
 # uvicorn main:app --reload
 # http://localhost:8000/docs
 
-from fastapi import FastAPI
+import os
+from fastapi import FastAPI, Depends, HTTPException, Query
 import httpx
 import xmltodict
 import datetime
@@ -13,8 +14,18 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from apscheduler.schedulers.background import BackgroundScheduler
+from dotenv import load_dotenv
 
-app = FastAPI()
+load_dotenv()
+API_KEY = os.getenv("API_KEY")
+
+def verify_api_key(api_key: str = Query(..., alias="api_key")):
+    if not API_KEY:
+        raise HTTPException(status_code=500, detail="API key not configured")
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+
+app = FastAPI(dependencies=[Depends(verify_api_key)])
 
 # --- CẤU HÌNH DATABASE ---
 SQLALCHEMY_DATABASE_URL = "sqlite:///./data_history.db"
