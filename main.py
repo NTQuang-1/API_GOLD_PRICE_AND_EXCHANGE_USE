@@ -135,7 +135,7 @@ async def fetch_and_save_data():
 # --- CHẠY ---
 def run_task(): asyncio.run(fetch_and_save_data())
 scheduler = BackgroundScheduler()
-scheduler.add_job(run_task, 'cron', hour=8, minute=30)
+scheduler.add_job(run_task, 'interval', hours=1)
 scheduler.start()
 
 @app.on_event("startup")
