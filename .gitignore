@@ -1,0 +1,14 @@
+# Bỏ qua thư mục môi trường ảo
+venv/
+env/
+
+# Bỏ qua file database
+*.db
+*.sqlite3
+
+# Bỏ qua các file rác của Python
+__pycache__/
+*.pyc
+
+# Bỏ qua file cấu hình môi trường
+.env
